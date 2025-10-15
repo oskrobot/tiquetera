@@ -7,9 +7,13 @@
     "icon": "./assets/images/icon.png",
     "scheme": "tiquetera",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": true,    
     "ios": {
       "supportsTablet": true
+    },
+    "extra": {
+      "supabaseUrl": "https://vqqdsfbgpiihvhkspsyt.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWRzZmJncGlpaHZoa3Nwc3l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1MDk2MzYsImV4cCI6MjA3NjA4NTYzNn0.a7P1hh5jVo4JcjMmT0CggWMgkDLApv0BZg_hxB4k04w"
     },
     "android": {
       "adaptiveIcon": {
@@ -38,7 +42,8 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
