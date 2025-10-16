@@ -7,47 +7,26 @@
     "icon": "./assets/images/icon.png",
     "scheme": "tiquetera",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,    
-    "ios": {
-      "supportsTablet": true
-    },
+    "newArchEnabled": true,
+    "ios": { "supportsTablet": true },
     "extra": {
       "supabaseUrl": "https://vqqdsfbgpiihvhkspsyt.supabase.co",
       "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWRzZmJncGlpaHZoa3Nwc3l0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1MDk2MzYsImV4cCI6MjA3NjA4NTYzNn0.a7P1hh5jVo4JcjMmT0CggWMgkDLApv0BZg_hxB4k04w"
     },
-    "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
-      },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
-    },
-    "web": {
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
-    },
     "plugins": [
       "expo-router",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
-          "dark": {
-            "backgroundColor": "#000000"
-          }
+      ["expo-camera", {
+        "cameraPermission": "Permiso para usar la cámara y escanear códigos QR de tiqueteras."
+      }],
+      ["expo-splash-screen", {
+        "image": "./assets/images/splash-icon.png",
+        "imageWidth": 200,
+        "resizeMode": "contain",
+        "backgroundColor": "#ffffff",
+        "dark": {
+          "backgroundColor": "#000000"
         }
-      ],
-      "expo-secure-store"
-    ],
-    "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
-    }
+      }]
+    ]
   }
 }

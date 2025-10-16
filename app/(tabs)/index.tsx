@@ -1,15 +1,15 @@
-import { useEffect, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
+import { useCallback, useEffect, useState } from "react";
 import { Alert, Pressable, Text, View } from "react-native";
-import TicketBook from "../../components/TicketBook"; // 👈 ajusta si tu components está en otro lugar
-import { supabase } from "../../lib/supabase"; // 👈 ajusta si tu lib/ está en otro lugar
+import TicketBook from "../../components/TicketBook";
+import { supabase } from "../../lib/supabase";
 
-// 1) Helper de autenticación: intenta login; si no existe, crea y luego fuerza login.
-//   - En Supabase (Auth → Email) es recomendable DESACTIVAR "Confirm email" mientras desarrollas.
+// Login/registro de prueba (desactiva Confirm email en Supabase para dev)
 async function signInOrSignUp(email: string, password: string) {
   const { data: inData } = await supabase.auth.signInWithPassword({ email, password });
   if (inData?.user) return inData.user;
 
-  const { data: upData, error: upErr } = await supabase.auth.signUp({ email, password });
+  const { error: upErr } = await supabase.auth.signUp({ email, password });
   if (upErr) { Alert.alert("Auth", upErr.message); return null; }
 
   const { data: after, error: afterErr } = await supabase.auth.signInWithPassword({ email, password });
@@ -21,31 +21,19 @@ async function signInOrSignUp(email: string, password: string) {
 }
 
 export default function Home() {
-  // estado UI
   const [used, setUsed] = useState(0);
   const [bookId, setBookId] = useState<string | null>(null);
   const total = 30;
 
-  // 2) Al montar: login/registro, verificar sesión y crear/buscar la tiquetera
+  // Crear/buscar tiquetera al montar
   useEffect(() => {
     (async () => {
       const email = "demo@tiquetera.com";
       const password = "Demo1234!";
 
-      // opcional: limpia sesión anterior si estabas probando
-      // await supabase.auth.signOut();
-
       const user = await signInOrSignUp(email, password);
       if (!user) return;
 
-      const s = await supabase.auth.getSession();
-      console.log("session user id:", s.data.session?.user?.id);
-      if (!s.data.session?.user?.id) {
-        Alert.alert("Auth", "Sin sesión activa.");
-        return;
-      }
-
-      // Buscar tiquetera del usuario
       const { data: books, error: selErr } = await supabase
         .from("ticket_books")
         .select("*")
@@ -55,7 +43,6 @@ export default function Home() {
       if (selErr) { Alert.alert("DB", selErr.message); return; }
 
       let book = books?.[0];
-      // Crear si no existe
       if (!book) {
         const { data, error } = await supabase
           .from("ticket_books")
@@ -71,7 +58,44 @@ export default function Home() {
     })();
   }, []);
 
-  // 3) Canjear 1 almuerzo (inserta en redemptions y aumenta meals_used)
+  // Función para recargar el libro desde la DB
+  const loadBookById = useCallback(async (id: string) => {
+    const { data: book, error } = await supabase
+      .from("ticket_books")
+      .select("*")
+      .eq("id", id)
+      .single();
+    if (!error && book) setUsed(book.meals_used ?? 0);
+  }, []);
+
+  // Refrescar cuando la pestaña Home gana foco
+  useFocusEffect(
+    useCallback(() => {
+      if (bookId) loadBookById(bookId);
+    }, [bookId, loadBookById])
+  );
+
+  // (Opcional) Tiempo real: suscribirse a updates del ticket_book
+  useEffect(() => {
+    if (!bookId) return;
+    const channel = supabase
+      .channel("ticket_book_updates")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "ticket_books", filter: `id=eq.${bookId}` },
+        (payload) => {
+          const nextUsed = (payload.new as any)?.meals_used;
+          if (typeof nextUsed === "number") setUsed(nextUsed);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [bookId]);
+
+  // Canjear 1 (para probar desde Home también)
   async function redeemOne() {
     try {
       if (!bookId) { Alert.alert("Tiquetera", "No hay tiquetera activa."); return; }
@@ -119,19 +143,12 @@ export default function Home() {
           onPress={redeemOne}
           style={{ padding: 12, backgroundColor: "#2563eb", borderRadius: 12, alignItems: "center" }}
         >
-          <Text style={{ color: "#fff", fontWeight: "700" }}>Canjear 1 almuerzo</Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => setUsed(0)}
-          style={{ padding: 12, backgroundColor: "#e5e7eb", borderRadius: 12, alignItems: "center" }}
-        >
-          <Text style={{ color: "#111827", fontWeight: "600" }}>Reiniciar (solo UI)</Text>
+          <Text style={{ color: "#fff", fontWeight: "700" }}>Canjear 1 almuerzo (Home)</Text>
         </Pressable>
       </View>
 
       <Text style={{ fontSize: 12, opacity: 0.6 }}>
-        Los canjes reales se registran en Supabase (ticket_books / redemptions).
+        Home se refresca al volver a la pestaña y (opcional) en tiempo real.
       </Text>
     </View>
   );
