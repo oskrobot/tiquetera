@@ -4,31 +4,70 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Text, View } from "react-native";
 import { supabase } from "../../lib/supabase";
 
+/** Inicia sesión como STAFF y garantiza membership en "Restaurante Demo" */
+async function signInStaff() {
+  const email = "staff@tiquetera.com";
+  const password = "Demo1234!";
+
+  // login → si no existe, signup + login
+  const { data: inData } = await supabase.auth.signInWithPassword({ email, password });
+  let user = inData?.user;
+  if (!user) {
+    await supabase.auth.signUp({ email, password });
+    const { data: after } = await supabase.auth.signInWithPassword({ email, password });
+    user = after?.user ?? null;
+  }
+  if (!user) {
+    Alert.alert("Auth", "No fue posible iniciar sesión de staff.");
+    return null;
+  }
+
+  // restaurante demo (tolerante)
+  const { data: rest, error: restErr } = await supabase
+    .from("restaurants")
+    .select("id")
+    .eq("name", "Restaurante Demo")
+    .limit(1)
+    .maybeSingle();
+  if (restErr || !rest?.id) {
+    Alert.alert("DB", restErr?.message ?? "Falta restaurante Demo");
+    return user; // seguimos logueados, pero sin membership
+  }
+
+  // asegurar membership staff (upsert evita duplicados; requiere policy de UPDATE)
+  const { error: memErr } = await supabase
+    .from("memberships")
+    .upsert({ user_id: user.id, restaurant_id: rest.id, role: "staff" });
+  if (memErr) Alert.alert("DB", memErr.message);
+
+  return user;
+}
+
 export default function StaffScanner() {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
 
-  // Evitar lecturas repetidas mientras procesamos un QR
+  // Evitar lecturas y alerts duplicados
   const scanningRef = useRef(false);
-  // Evitar apilar múltiples Alerts
   const alertOpenRef = useRef(false);
 
+  // Pedir permiso cámara + login staff al entrar
   useEffect(() => {
     (async () => {
-      if (!permission?.granted) {
-        await requestPermission();
-      }
+      if (!permission?.granted) await requestPermission();
+      await signInStaff();
     })();
   }, [permission, requestPermission]);
 
   const redeemByBookId = useCallback(async (bookId: string) => {
     try {
-      // 1) leer estado actual
+      // 1) leer ticket_book (tolerante)
       const { data: book, error: bErr } = await supabase
         .from("ticket_books")
         .select("*")
         .eq("id", bookId)
-        .single();
+        .limit(1)
+        .maybeSingle();
       if (bErr || !book) {
         if (!alertOpenRef.current) {
           alertOpenRef.current = true;
@@ -50,10 +89,14 @@ export default function StaffScanner() {
         return;
       }
 
-      // 2) registrar canje
+      // 2) staff actual
+      const s = await supabase.auth.getSession();
+      const staffUserId = s.data.session?.user?.id ?? null;
+
+      // 3) registrar canje (RLS permite staff/admin del mismo restaurante)
       const { error: rErr } = await supabase
         .from("redemptions")
-        .insert([{ ticket_book_id: bookId }]);
+        .insert([{ ticket_book_id: bookId, staff_user_id: staffUserId }]);
       if (rErr) {
         if (!alertOpenRef.current) {
           alertOpenRef.current = true;
@@ -64,17 +107,17 @@ export default function StaffScanner() {
         return;
       }
 
-      // 3) incrementar contador
+      // 4) incrementar contador (tolerante)
       const { data: updated, error: uErr } = await supabase
         .from("ticket_books")
         .update({ meals_used: book.meals_used + 1 })
         .eq("id", bookId)
         .select()
-        .single();
-      if (uErr) {
+        .maybeSingle();
+      if (uErr || !updated) {
         if (!alertOpenRef.current) {
           alertOpenRef.current = true;
-          Alert.alert("DB", uErr.message, [
+          Alert.alert("DB", uErr?.message ?? "Error actualizando", [
             { text: "OK", onPress: () => (alertOpenRef.current = false) },
           ]);
         }
@@ -100,7 +143,7 @@ export default function StaffScanner() {
   }, []);
 
   const handleScan = ({ data }: { data: string }) => {
-    if (scanningRef.current) return; // ya estamos procesando uno
+    if (scanningRef.current) return; // bloquea doble lectura en caliente
     scanningRef.current = true;
     setScanned(true);
 
@@ -124,7 +167,7 @@ export default function StaffScanner() {
         ]);
       }
     } finally {
-      // permitir reintento tras un pequeño cooldown
+      // cooldown para permitir reintentos
       setTimeout(() => {
         scanningRef.current = false;
         setScanned(false);
