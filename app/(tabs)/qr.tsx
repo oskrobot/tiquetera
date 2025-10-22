@@ -1,19 +1,17 @@
-// app/(tabs)/qr.tsx
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Text, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 import { supabase } from "../../lib/supabase";
 
-// (opcional) helper rápido por si abres esta pestaña sin pasar por Home
+// (opcional) helper por si abres esta pestaña sin pasar por Home
 async function ensureSession() {
   const s = await supabase.auth.getSession();
   const userId = s.data.session?.user?.id;
   if (userId) return userId;
 
-  // usuario demo de desarrollo
+  // usuario demo (cliente)
   const email = "demo@tiquetera.com";
   const password = "Demo1234!";
-
   const { data: inData } = await supabase.auth.signInWithPassword({ email, password });
   let user = inData?.user;
   if (!user) {
@@ -35,44 +33,35 @@ export default function MyQR() {
 
         // 1) sesión del usuario
         const userId = await ensureSession();
-        if (!userId) {
-          Alert.alert("Auth", "No hay sesión de usuario.");
-          setLoading(false);
-          return;
-        }
+        if (!userId) { Alert.alert("Auth", "No hay sesión de usuario."); setLoading(false); return; }
 
-        // 2) restaurante demo (tolerante)
+        // 2) restaurante demo
         const { data: rest, error: restErr } = await supabase
-          .from("restaurants")
-          .select("id")
-          .eq("name", "Restaurante Demo")
-          .limit(1)
-          .maybeSingle();
-        if (restErr || !rest?.id) {
-          Alert.alert("DB", restErr?.message ?? "Falta restaurante Demo");
-          setLoading(false);
-          return;
-        }
+          .from("restaurants").select("id")
+          .eq("name", "Restaurante Demo").limit(1).maybeSingle();
+        if (restErr || !rest?.id) { Alert.alert("DB", restErr?.message ?? "Falta restaurante Demo"); setLoading(false); return; }
         const restaurantId = rest.id;
 
-        // 3) asegurar membership del cliente (customer)
-        const { error: memErr } = await supabase
+        // 3) membership (SELECT → INSERT si falta)
+        const { data: memRows, error: memSelErr } = await supabase
           .from("memberships")
-          .upsert({ user_id: userId, restaurant_id: restaurantId, role: "customer" });
-        if (memErr) {
-          Alert.alert("DB", memErr.message);
-          setLoading(false);
-          return;
+          .select("user_id")
+          .eq("user_id", userId)
+          .eq("restaurant_id", restaurantId)
+          .limit(1);
+        if (memSelErr) { Alert.alert("DB", memSelErr.message); setLoading(false); return; }
+        if (!memRows || memRows.length === 0) {
+          const { error: memInsErr } = await supabase
+            .from("memberships")
+            .insert([{ user_id: userId, restaurant_id: restaurantId, role: "customer" }]);
+          if (memInsErr) { Alert.alert("DB", memInsErr.message); setLoading(false); return; }
         }
 
-        // 4) plan (Plan 30) opcional para crear el book si falta
+        // 4) plan (para crear book si falta)
         const { data: plan } = await supabase
-          .from("meal_plans")
-          .select("id, meals_total")
-          .eq("restaurant_id", restaurantId)
-          .eq("name", "Plan 30")
-          .limit(1)
-          .maybeSingle();
+          .from("meal_plans").select("id, meals_total")
+          .eq("restaurant_id", restaurantId).eq("name", "Plan 30")
+          .limit(1).maybeSingle();
         const planId = plan?.id ?? null;
         const totalMeals = plan?.meals_total ?? 30;
 
@@ -82,6 +71,8 @@ export default function MyQR() {
           .select("id")
           .eq("user_id", userId)
           .eq("restaurant_id", restaurantId)
+          .eq("status", "active")
+          .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle();
 
@@ -97,13 +88,8 @@ export default function MyQR() {
               restaurant_id: restaurantId,
               meal_plan_id: planId
             }])
-            .select("id")
-            .maybeSingle();
-          if (cErr || !newBook?.id) {
-            Alert.alert("DB", cErr?.message ?? "No se pudo crear la tiquetera");
-            setLoading(false);
-            return;
-          }
+            .select("id").maybeSingle();
+          if (cErr || !newBook?.id) { Alert.alert("DB", cErr?.message ?? "No se pudo crear la tiquetera"); setLoading(false); return; }
           tid = newBook.id;
         }
 
@@ -136,11 +122,7 @@ export default function MyQR() {
   }
 
   // Payload del QR (simple). En la siguiente fase lo firmaremos con un token corto.
-  const payload = JSON.stringify({
-    t: "ticket_book",
-    id: bookId,
-    ts: Date.now()
-  });
+  const payload = JSON.stringify({ t: "ticket_book", id: bookId, ts: Date.now() });
 
   return (
     <View style={{ flex:1, alignItems:"center", justifyContent:"center", gap:12, padding:16 }}>

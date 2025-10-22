@@ -1,4 +1,3 @@
-// app/(tabs)/staff.tsx
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Text, View } from "react-native";
@@ -9,6 +8,9 @@ async function signInStaff() {
   const email = "staff@tiquetera.com";
   const password = "Demo1234!";
 
+  // Limpia cualquier sesión previa (por ejemplo, la del cliente)
+  await supabase.auth.signOut();
+
   // login → si no existe, signup + login
   const { data: inData } = await supabase.auth.signInWithPassword({ email, password });
   let user = inData?.user;
@@ -17,28 +19,29 @@ async function signInStaff() {
     const { data: after } = await supabase.auth.signInWithPassword({ email, password });
     user = after?.user ?? null;
   }
-  if (!user) {
-    Alert.alert("Auth", "No fue posible iniciar sesión de staff.");
-    return null;
-  }
+  if (!user) { Alert.alert("Auth", "No fue posible iniciar sesión de staff."); return null; }
 
   // restaurante demo (tolerante)
   const { data: rest, error: restErr } = await supabase
-    .from("restaurants")
-    .select("id")
-    .eq("name", "Restaurante Demo")
-    .limit(1)
-    .maybeSingle();
-  if (restErr || !rest?.id) {
-    Alert.alert("DB", restErr?.message ?? "Falta restaurante Demo");
-    return user; // seguimos logueados, pero sin membership
-  }
+    .from("restaurants").select("id")
+    .eq("name", "Restaurante Demo").limit(1).maybeSingle();
+  if (restErr || !rest?.id) { Alert.alert("DB", restErr?.message ?? "Falta restaurante Demo"); return user; }
 
-  // asegurar membership staff (upsert evita duplicados; requiere policy de UPDATE)
-  const { error: memErr } = await supabase
+  // asegurar membership staff: SELECT → INSERT si falta
+  const { data: exists, error: selErr } = await supabase
     .from("memberships")
-    .upsert({ user_id: user.id, restaurant_id: rest.id, role: "staff" });
-  if (memErr) Alert.alert("DB", memErr.message);
+    .select("user_id")
+    .eq("user_id", user.id)
+    .eq("restaurant_id", rest.id)
+    .limit(1);
+  if (selErr) { Alert.alert("DB", selErr.message); return user; }
+
+  if (!exists || exists.length === 0) {
+    const { error: insErr } = await supabase
+      .from("memberships")
+      .insert([{ user_id: user.id, restaurant_id: rest.id, role: "staff" }]);
+    if (insErr) { Alert.alert("DB", insErr.message); }
+  }
 
   return user;
 }
