@@ -1,16 +1,26 @@
+// app/(tabs)/index.tsx
+// -------------------------------------------------------------
+// Pestaña "Home": muestra el saldo de la tiquetera del cliente,
+// su historial de canjes y acciones de prueba (canjear, recargar,
+// renovar, reiniciar). Ahora incluye "Editar nombre" (profiles).
+// -------------------------------------------------------------
+
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Pressable, Text, TextInput, View } from "react-native";
 import TicketBook from "../../components/TicketBook";
 import { supabase } from "../../lib/supabase";
 
-const MAX_TOTAL = 30; // tope de comidas por tiquetera (plan demo)
+// [A] Config general ----------------------------------------------------------
+const MAX_TOTAL = 30; // Límite visual/operativo por tiquetera (MVP)
 
-/** Auth de desarrollo (email/password demo del cliente) */
+// [B] Helper de auth (cliente demo) -------------------------------------------
 async function signInOrSignUp(email: string, password: string) {
+  // 1) Intenta login directo
   const { data: inData } = await supabase.auth.signInWithPassword({ email, password });
   if (inData?.user) return inData.user;
 
+  // 2) Si falla, crea el usuario y vuelve a intentar login
   const { error: upErr } = await supabase.auth.signUp({ email, password });
   if (upErr) { Alert.alert("Auth", upErr.message); return null; }
 
@@ -22,9 +32,12 @@ async function signInOrSignUp(email: string, password: string) {
   return after.user;
 }
 
+// [C] Tipos simples -----------------------------------------------------------
 type Redemption = { id: string; redeemed_at: string };
 
+// [D] Componente principal ----------------------------------------------------
 export default function Home() {
+  // Estado mínimo para operar la pantalla
   const [bookId, setBookId] = useState<string | null>(null);
   const [used, setUsed] = useState(0);
   const [total, setTotal] = useState(30); // fallback
@@ -32,20 +45,52 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
 
-  /** Crear/buscar la tiquetera ligada al restaurante demo + plan, y cargar historial */
+  // 👇 Nuevo: nombre de perfil y estado de guardado
+  const [name, setName] = useState("Cliente Demo");
+  const [savingName, setSavingName] = useState(false);
+
+  // [E] Carga inicial: sesión cliente → perfil → restaurante → membership → plan → book
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
+
+        // (E0) Evitar sesiones cruzadas (si venías de Staff en este mismo dispositivo)
+        await supabase.auth.signOut();
+
+        // (E1) Sesión de CLIENTE
         const email = "demo@tiquetera.com";
         const password = "Demo1234!";
-
-        // 1) Sesión
         const user = await signInOrSignUp(email, password);
         if (!user) { setLoading(false); return; }
-        console.log("[home] user", user.id);
 
-        // 2) Restaurante Demo (tolerante)
+        // Verifica que la sesión activa corresponda al mismo user.id
+        const s = await supabase.auth.getSession();
+        const sid = s.data.session?.user?.id;
+        if (sid !== user.id) {
+          await supabase.auth.signOut();
+          const u2 = await signInOrSignUp(email, password);
+          if (!u2) { setLoading(false); return; }
+        }
+
+        // (E2) Asegurar PERFIL del cliente (tabla 'profiles')
+        const { data: profRow, error: profSelErr } = await supabase
+          .from("profiles")
+          .select("id, full_name")
+          .eq("id", user.id)
+          .maybeSingle();
+        if (profSelErr) { Alert.alert("DB", profSelErr.message); setLoading(false); return; }
+        if (!profRow) {
+          const { error: profInsErr } = await supabase
+            .from("profiles")
+            .insert([{ id: user.id, full_name: "Cliente Demo" }]);
+          if (profInsErr) { Alert.alert("DB", profInsErr.message); setLoading(false); return; }
+          setName("Cliente Demo");
+        } else {
+          setName(profRow.full_name || "Cliente Demo");
+        }
+
+        // (E3) Restaurante demo
         const { data: rest, error: restErr } = await supabase
           .from("restaurants").select("id")
           .eq("name", "Restaurante Demo")
@@ -54,9 +99,8 @@ export default function Home() {
           .maybeSingle();
         if (restErr || !rest?.id) { Alert.alert("DB", restErr?.message ?? "Falta restaurante Demo"); setLoading(false); return; }
         const restaurantId = rest.id;
-        console.log("[home] restaurantId", restaurantId);
 
-        // 3) Membership cliente (SELECT → INSERT si falta)
+        // (E4) Asegurar MEMBERSHIP del cliente en ese restaurante (role=customer)
         const { data: memRows, error: memSelErr } = await supabase
           .from("memberships")
           .select("user_id")
@@ -71,7 +115,7 @@ export default function Home() {
           if (memInsErr) { Alert.alert("DB", memInsErr.message); setLoading(false); return; }
         }
 
-        // 4) Plan 30 (tolerante). Si no existe, usamos fallback MAX_TOTAL
+        // (E5) Plan demo ("Plan 30") — total por defecto al crear un book
         const { data: plan, error: planErr } = await supabase
           .from("meal_plans").select("id, meals_total")
           .eq("restaurant_id", restaurantId).eq("name", "Plan 30")
@@ -81,9 +125,8 @@ export default function Home() {
         if (planErr) { Alert.alert("DB", planErr.message); setLoading(false); return; }
         const planId = plan?.id ?? null;
         const totalMeals = plan?.meals_total ?? MAX_TOTAL;
-        console.log("[home] planId", planId, "totalMeals", totalMeals);
 
-        // 5) Buscar tiquetera ACTIVA más reciente del usuario para ese restaurante
+        // (E6) Buscar TIQUETERA ACTIVA más reciente del usuario para ese restaurante
         const { data: existingBook, error: selErr } = await supabase
           .from("ticket_books")
           .select("*")
@@ -97,7 +140,7 @@ export default function Home() {
 
         let currentBook = existingBook ?? null;
 
-        // 6) Si no existe, crear una nueva (status activo)
+        // (E7) Si no existe, crear una nueva (status activo)
         if (!currentBook) {
           const { data: created, error: cErr } = await supabase
             .from("ticket_books")
@@ -118,14 +161,7 @@ export default function Home() {
           currentBook = created;
         }
 
-        if (!currentBook?.id) {
-          Alert.alert("DB", "No se pudo establecer una tiquetera activa.");
-          setLoading(false);
-          return;
-        }
-
-        console.log("[home] bookId", currentBook.id);
-
+        // (E8) Llevar datos a la UI + historial
         setBookId(currentBook.id);
         setUsed(currentBook.meals_used ?? 0);
         setTotal(currentBook.meals_total ?? totalMeals);
@@ -133,14 +169,13 @@ export default function Home() {
         await loadHistory(currentBook.id);
         setLoading(false);
       } catch (e: any) {
-        console.error("[home] init error", e);
         Alert.alert("Error", e?.message ?? String(e));
         setLoading(false);
       }
     })();
   }, []);
 
-  /** Carga book y últimos 10 canjes */
+  // [F] Cargar book + últimos canjes (para Pull-to-Refresh y enfoque de pestaña)
   const loadAll = useCallback(async (id: string) => {
     setRefreshing(true);
     const [{ data: book }, { data: rows }] = await Promise.all([
@@ -155,7 +190,7 @@ export default function Home() {
     setRefreshing(false);
   }, [total]);
 
-  /** Solo historial */
+  // Solo historial (para escuchar realtime de redemptions)
   const loadHistory = useCallback(async (id: string) => {
     const { data: rows } = await supabase
       .from("redemptions")
@@ -166,14 +201,15 @@ export default function Home() {
     setRedemptions(rows ?? []);
   }, []);
 
-  /** Refrescar al volver a la pestaña */
+  // [G] Al volver a enfocarse la pestaña, refresca datos
   useFocusEffect(useCallback(() => {
     if (bookId) loadAll(bookId);
   }, [bookId, loadAll]));
 
-  /** Suscripciones en tiempo real */
+  // [H] Suscripciones en tiempo real: actualiza usados/total e historial en vivo
   useEffect(() => {
     if (!bookId) return;
+
     const chBook = supabase
       .channel("book_updates")
       .on("postgres_changes",
@@ -201,7 +237,7 @@ export default function Home() {
     };
   }, [bookId, loadHistory]);
 
-  /** Canje manual desde Home (pruebas) */
+  // [I] Acción: canje manual de 1 (para pruebas desde Home)
   async function redeemOne() {
     try {
       if (!bookId) { Alert.alert("Tiquetera", "No hay tiquetera activa."); return; }
@@ -229,28 +265,32 @@ export default function Home() {
     }
   }
 
-  /** Renovar tiquetera: expira la actual y crea una nueva con el plan por defecto */
+  // [J] Acción: renovar tiquetera (expira la actual y crea otra del mismo plan)
   async function renewBook() {
     try {
       if (!bookId) return;
 
+      // Lee datos necesarios del book actual
       const { data: book, error: bErr } = await supabase
         .from("ticket_books")
         .select("id, restaurant_id, meal_plan_id")
         .eq("id", bookId).limit(1).maybeSingle();
       if (bErr || !book) { Alert.alert("DB", bErr?.message ?? "No se encontró la tiquetera"); return; }
 
+      // Obtén el total del plan (o usa MAX_TOTAL)
       const { data: plan } = await supabase
         .from("meal_plans").select("id, meals_total")
         .eq("id", book.meal_plan_id).limit(1).maybeSingle();
       const totalMeals = plan?.meals_total ?? MAX_TOTAL;
 
+      // Expira la actual
       const { error: upErr } = await supabase
         .from("ticket_books")
         .update({ status: "expired" })
         .eq("id", bookId);
       if (upErr) { Alert.alert("DB", upErr.message); return; }
 
+      // Crea la nueva
       const s = await supabase.auth.getSession();
       const userId = s.data.session?.user?.id;
       const { data: newBook, error: cErr } = await supabase
@@ -265,6 +305,7 @@ export default function Home() {
         .select().maybeSingle();
       if (cErr || !newBook) { Alert.alert("DB", cErr?.message ?? "No se pudo crear la nueva tiquetera"); return; }
 
+      // Actualiza UI
       setBookId(newBook.id);
       setUsed(newBook.meals_used ?? 0);
       setTotal(newBook.meals_total ?? totalMeals);
@@ -275,7 +316,7 @@ export default function Home() {
     }
   }
 
-  /** Agregar almuerzos (demo) con tope */
+  // [K] Acción: recargar almuerzos (solo demo) con tope y sugerencia de renovar
   async function addMeals(delta: number) {
     try {
       if (!bookId) { Alert.alert("Tiquetera", "No hay tiquetera activa."); return; }
@@ -317,6 +358,29 @@ export default function Home() {
     }
   }
 
+  // [K2] Acción: guardar nombre del perfil (profiles.full_name)
+  async function saveName() {
+    try {
+      setSavingName(true);
+      const s = await supabase.auth.getSession();
+      const userId = s.data.session?.user?.id;
+      if (!userId) { Alert.alert("Auth", "Sin sesión"); setSavingName(false); return; }
+
+      const { error } = await supabase
+        .from("profiles")
+        .update({ full_name: name })
+        .eq("id", userId);
+      if (error) { Alert.alert("DB", error.message); setSavingName(false); return; }
+
+      Alert.alert("Perfil", "Nombre actualizado.");
+    } catch (e: any) {
+      Alert.alert("Error", e?.message ?? String(e));
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  // [L] UI de carga
   if (loading) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 12 }}>
@@ -326,14 +390,49 @@ export default function Home() {
     );
   }
 
+  // [M] Cálculo de saldo restante (defensivo)
   const remaining = Math.max(total - used, 0);
 
-  /** Header de la lista: resumen + grilla + botones */
+  // [N] Header: perfil, resumen, grilla, acciones
   const Header = (
     <View style={{ gap: 16 }}>
+      {/* Perfil (editar nombre) */}
+      <View style={{ padding: 16, borderRadius: 16, backgroundColor: "#eef2ff", gap: 10 }}>
+        <Text style={{ fontSize: 16, fontWeight: "700" }}>Tu perfil</Text>
+        <Text style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>
+          Este nombre aparecerá al personal al confirmar un canje.
+        </Text>
+        <TextInput
+          value={name}
+          onChangeText={setName}
+          placeholder="Tu nombre"
+          style={{
+            padding: 12,
+            borderWidth: 1,
+            borderColor: "#c7d2fe",
+            backgroundColor: "#fff",
+            borderRadius: 12,
+          }}
+        />
+        <Pressable
+          onPress={saveName}
+          disabled={savingName}
+          style={{
+            padding: 12,
+            backgroundColor: savingName ? "#9ca3af" : "#4f46e5",
+            borderRadius: 12,
+            alignItems: "center",
+          }}
+        >
+          <Text style={{ color: "#fff", fontWeight: "700" }}>
+            {savingName ? "Guardando…" : "Guardar nombre"}
+          </Text>
+        </Pressable>
+      </View>
+
       {/* Resumen */}
       <View style={{ padding: 16, borderRadius: 16, backgroundColor: "#f3f4f6", gap: 6 }}>
-        <Text style={{ fontSize: 18, fontWeight: "700" }}>Saldo</Text>
+        <Text style={{ fontSize: 18, fontWeight: "700" }}>Hola, {name}</Text>
         <Text style={{ fontSize: 28, fontWeight: "800" }}>{remaining} restantes</Text>
         <Text style={{ opacity: 0.7 }}>Usados: {used} / {total}</Text>
         {/* Debug opcional: */}
@@ -342,7 +441,7 @@ export default function Home() {
 
       {/* Tiquetera visual */}
       <TicketBook
-        name="Cliente Demo"
+        name={name}
         total={total}
         used={used}
         onSelect={() => { /* solo visual; el canje real es con botón o QR */ }}
@@ -423,11 +522,11 @@ export default function Home() {
             (Solo para pruebas; en producción se hará tras el pago)
           </Text>
         </View>
-
       </View>
     </View>
   );
 
+  // [O] Listado (historial)
   return (
     <FlatList
       data={redemptions}

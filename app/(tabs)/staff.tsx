@@ -34,7 +34,7 @@ async function signInStaff() {
   return user;
 }
 
-type ConfirmData = { nonce: string; bookId: string; used: number; total: number };
+type ConfirmData = { nonce: string; bookId: string; used: number; total: number; name: string };
 
 export default function StaffScanner() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -57,7 +57,6 @@ export default function StaffScanner() {
     Alert.alert(title, msg, [{ text: "OK", onPress: () => (alertOpenRef.current = false) }]);
   };
 
-  // 👉 Helper: rearmar el escaneo tras un error/early-return
   function rearmScan(delay = 300) {
     setTimeout(() => {
       scanningRef.current = false;
@@ -80,51 +79,45 @@ export default function StaffScanner() {
 
       const nonce: string = parsed.nonce;
 
-      // 1) Leer token
+      // 1) Token -> book_id
       const { data: tok, error: tErr } = await supabase
         .from("qr_tokens")
         .select("book_id, expires_at, used_at")
         .eq("nonce", nonce)
         .limit(1)
         .maybeSingle();
-      if (tErr || !tok) {
-        openAlertOnce("Token", tErr?.message ?? "Token no encontrado o no autorizado.");
-        rearmScan();
-        return;
-      }
-      if (tok.used_at) {
-        openAlertOnce("Token", "Este token ya fue usado.");
-        rearmScan();
-        return;
-      }
-      if (tok.expires_at && new Date(tok.expires_at).getTime() <= Date.now()) {
-        openAlertOnce("Token", "Este token expiró.");
-        rearmScan();
-        return;
-      }
+      if (tErr || !tok) { openAlertOnce("Token", tErr?.message ?? "Token no encontrado."); rearmScan(); return; }
+      if (tok.used_at) { openAlertOnce("Token", "Este token ya fue usado."); rearmScan(); return; }
+      if (tok.expires_at && new Date(tok.expires_at).getTime() <= Date.now()) { openAlertOnce("Token", "Este token expiró."); rearmScan(); return; }
 
-      // 2) Leer libro para mostrar saldo
+      // 2) Libro + user_id
       const { data: book, error: bErr } = await supabase
         .from("ticket_books")
-        .select("id, meals_used, meals_total")
+        .select("id, meals_used, meals_total, user_id")
         .eq("id", tok.book_id)
         .limit(1)
         .maybeSingle();
-      if (bErr || !book) {
-        openAlertOnce("DB", bErr?.message ?? "No se encontró la tiquetera.");
-        rearmScan();
-        return;
-      }
+      if (bErr || !book) { openAlertOnce("DB", bErr?.message ?? "No se encontró la tiquetera."); rearmScan(); return; }
 
       const remaining = (book.meals_total ?? 0) - (book.meals_used ?? 0);
-      if (remaining <= 0) {
-        openAlertOnce("Tiquetera", "Sin saldo disponible.");
-        rearmScan();
-        return;
-      }
+      if (remaining <= 0) { openAlertOnce("Tiquetera", "Sin saldo disponible."); rearmScan(); return; }
 
-      // 3) Abrir confirmación (NO rearmar: se rearmará tras confirmar/cancelar)
-      setConfirm({ nonce, bookId: book.id, used: book.meals_used ?? 0, total: book.meals_total ?? 0 });
+      // 3) Nombre del cliente (profiles)
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("id", book.user_id)
+        .maybeSingle();
+      const name = profile?.full_name || "Cliente";
+
+      // 4) Abrir confirmación
+      setConfirm({
+        nonce,
+        bookId: book.id,
+        used: book.meals_used ?? 0,
+        total: book.meals_total ?? 0,
+        name
+      });
     } catch {
       openAlertOnce("QR inválido", "No se pudo leer el contenido del código.");
       rearmScan();
@@ -187,6 +180,7 @@ export default function StaffScanner() {
         }}>
           <View style={{ width: "100%", maxWidth: 380, backgroundColor: "#fff", borderRadius: 16, padding: 16, gap: 12 }}>
             <Text style={{ fontSize: 18, fontWeight: "700" }}>Confirmar canje</Text>
+            <Text style={{ fontWeight: "600" }}>Cliente: {confirm.name}</Text>
             <Text>Usados: {confirm.used} / {confirm.total}</Text>
             <Text style={{ opacity: 0.7 }}>Restantes: {Math.max(confirm.total - confirm.used, 0)}</Text>
 
