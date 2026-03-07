@@ -1,40 +1,19 @@
-import { CameraView, useCameraPermissions } from "expo-camera";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Pressable, Text, View } from "react-native";
-import { supabase } from "../../lib/supabase";
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { tokens } from '../../constants/tokens';
+import { alertError } from '../../lib/error-utils';
+import { supabase } from '../../lib/supabase';
+import { ensureDemoSession } from '../../services/demo-auth';
+import { ensureMembership, getDemoRestaurantId } from '../../services/demo-data';
 
-async function signInStaff() {
-  const email = "staff@tiquetera.com";
-  const password = "Demo1234!";
+type ConfirmData = { nonce: string; used: number; total: number; name: string };
 
-  await supabase.auth.signOut();
-
-  const { data: inData } = await supabase.auth.signInWithPassword({ email, password });
-  let user = inData?.user;
-  if (!user) {
-    await supabase.auth.signUp({ email, password });
-    const { data: after } = await supabase.auth.signInWithPassword({ email, password });
-    user = after?.user ?? null;
-  }
-  if (!user) { Alert.alert("Auth", "No fue posible iniciar sesión de staff."); return null; }
-
-  const { data: rest } = await supabase
-    .from("restaurants").select("id")
-    .eq("name", "Restaurante Demo").order("created_at", { ascending: false })
-    .limit(1).maybeSingle();
-
-  if (rest?.id) {
-    const { data: exists } = await supabase
-      .from("memberships").select("user_id")
-      .eq("user_id", user.id).eq("restaurant_id", rest.id).limit(1);
-    if (!exists || exists.length === 0) {
-      await supabase.from("memberships").insert([{ user_id: user.id, restaurant_id: rest.id, role: "staff" }]);
-    }
-  }
-  return user;
+async function bootstrapStaff() {
+  const user = await ensureDemoSession('staff', true);
+  const restaurantId = await getDemoRestaurantId();
+  await ensureMembership(user.id, restaurantId, 'staff');
 }
-
-type ConfirmData = { nonce: string; bookId: string; used: number; total: number; name: string };
 
 export default function StaffScanner() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -42,20 +21,17 @@ export default function StaffScanner() {
   const [scanned, setScanned] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmData | null>(null);
   const [busy, setBusy] = useState(false);
-  const alertOpenRef = useRef(false);
 
   useEffect(() => {
     (async () => {
-      if (!permission?.granted) await requestPermission();
-      await signInStaff();
+      try {
+        if (!permission?.granted) await requestPermission();
+        await bootstrapStaff();
+      } catch (error) {
+        alertError('Staff', error);
+      }
     })();
   }, [permission, requestPermission]);
-
-  const openAlertOnce = (title: string, msg: string) => {
-    if (alertOpenRef.current) return;
-    alertOpenRef.current = true;
-    Alert.alert(title, msg, [{ text: "OK", onPress: () => (alertOpenRef.current = false) }]);
-  };
 
   function rearmScan(delay = 300) {
     setTimeout(() => {
@@ -71,136 +47,96 @@ export default function StaffScanner() {
 
     try {
       const parsed = JSON.parse(data);
-      if (!(parsed?.t === "redeem_token" && parsed?.nonce)) {
-        openAlertOnce("QR inválido", "El código no es un token válido.");
+      if (!(parsed?.t === 'redeem_token' && parsed?.nonce)) {
+        Alert.alert('QR inválido', 'El código no es un token válido.');
         rearmScan();
         return;
       }
 
       const nonce: string = parsed.nonce;
 
-      // 1) Token -> book_id
-      const { data: tok, error: tErr } = await supabase
-        .from("qr_tokens")
-        .select("book_id, expires_at, used_at")
-        .eq("nonce", nonce)
+      const { data: tok, error: tokenError } = await supabase
+        .from('qr_tokens')
+        .select('book_id, expires_at, used_at')
+        .eq('nonce', nonce)
         .limit(1)
         .maybeSingle();
-      if (tErr || !tok) { openAlertOnce("Token", tErr?.message ?? "Token no encontrado."); rearmScan(); return; }
-      if (tok.used_at) { openAlertOnce("Token", "Este token ya fue usado."); rearmScan(); return; }
-      if (tok.expires_at && new Date(tok.expires_at).getTime() <= Date.now()) { openAlertOnce("Token", "Este token expiró."); rearmScan(); return; }
 
-      // 2) Libro + user_id
-      const { data: book, error: bErr } = await supabase
-        .from("ticket_books")
-        .select("id, meals_used, meals_total, user_id")
-        .eq("id", tok.book_id)
+      if (tokenError || !tok) throw tokenError ?? new Error('Token no encontrado.');
+      if (tok.used_at) throw new Error('Este token ya fue usado.');
+      if (tok.expires_at && new Date(tok.expires_at).getTime() <= Date.now()) throw new Error('Este token expiró.');
+
+      const { data: book, error: bookError } = await supabase
+        .from('ticket_books')
+        .select('id, meals_used, meals_total, user_id')
+        .eq('id', tok.book_id)
         .limit(1)
         .maybeSingle();
-      if (bErr || !book) { openAlertOnce("DB", bErr?.message ?? "No se encontró la tiquetera."); rearmScan(); return; }
+
+      if (bookError || !book) throw bookError ?? new Error('No se encontró la tiquetera.');
 
       const remaining = (book.meals_total ?? 0) - (book.meals_used ?? 0);
-      if (remaining <= 0) { openAlertOnce("Tiquetera", "Sin saldo disponible."); rearmScan(); return; }
+      if (remaining <= 0) throw new Error('Sin saldo disponible.');
 
-      // 3) Nombre del cliente (profiles)
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("full_name")
-        .eq("id", book.user_id)
-        .maybeSingle();
-      const name = profile?.full_name || "Cliente";
+      const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', book.user_id).maybeSingle();
 
-      // 4) Abrir confirmación
       setConfirm({
         nonce,
-        bookId: book.id,
         used: book.meals_used ?? 0,
         total: book.meals_total ?? 0,
-        name
+        name: profile?.full_name || 'Cliente',
       });
-    } catch {
-      openAlertOnce("QR inválido", "No se pudo leer el contenido del código.");
+    } catch (error) {
+      alertError('Escaneo', error);
       rearmScan();
     }
-  };
-
-  const onCancel = () => {
-    setConfirm(null);
-    rearmScan(200);
   };
 
   const onConfirm = useCallback(async () => {
     if (!confirm || busy) return;
     try {
       setBusy(true);
-
-      const { data, error } = await supabase.rpc("redeem_with_token", { p_nonce: confirm.nonce });
-      if (error) { openAlertOnce("DB", error.message); return; }
-
+      const { data, error } = await supabase.rpc('redeem_with_token', { p_nonce: confirm.nonce });
+      if (error) throw error;
       const updated = Array.isArray(data) ? data[0] : data;
-      openAlertOnce("Canje realizado", `Usados: ${updated.meals_used} / ${updated.meals_total}`);
-    } catch (e: any) {
-      openAlertOnce("Error", e?.message ?? String(e));
+      Alert.alert('Canje realizado', `Usados: ${updated.meals_used} / ${updated.meals_total}`);
+    } catch (error) {
+      alertError('Canje', error);
     } finally {
       setBusy(false);
       setConfirm(null);
-      rearmScan(300);
+      rearmScan();
     }
   }, [confirm, busy]);
 
-  if (!permission) {
-    return <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Text>Solicitando permiso…</Text></View>;
-  }
-  if (!permission.granted) {
-    return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 16 }}>
-        <Text style={{ textAlign: "center", marginBottom: 8 }}>Sin permiso de cámara.</Text>
-        <Text style={{ textAlign: "center", opacity: 0.7 }}>Activa la cámara para esta app.</Text>
-      </View>
-    );
-  }
+  if (!permission) return <View style={styles.centered}><Text>Solicitando permiso…</Text></View>;
+  if (!permission.granted) return <View style={styles.centered}><Text>Sin permiso de cámara.</Text></View>;
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={styles.container}>
       <CameraView
-        style={{ flex: 1 }}
-        barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+        style={styles.camera}
+        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
         onBarcodeScanned={scanned ? undefined : (res) => handleScan({ data: res.data })}
       />
-      <View style={{ position: "absolute", top: 40, left: 0, right: 0, alignItems: "center" }}>
-        <Text style={{ backgroundColor: "rgba(0,0,0,0.6)", color: "#fff", padding: 8, borderRadius: 8 }}>
-          Apunta al QR del cliente
-        </Text>
+      <View style={styles.overlayTop}>
+        <Text style={styles.overlayLabel}>Apunta al QR del cliente</Text>
       </View>
 
       {confirm && (
-        <View style={{
-          position: "absolute", left: 0, right: 0, top: 0, bottom: 0,
-          backgroundColor: "rgba(0,0,0,0.45)", alignItems: "center", justifyContent: "center", padding: 20
-        }}>
-          <View style={{ width: "100%", maxWidth: 380, backgroundColor: "#fff", borderRadius: 16, padding: 16, gap: 12 }}>
-            <Text style={{ fontSize: 18, fontWeight: "700" }}>Confirmar canje</Text>
-            <Text style={{ fontWeight: "600" }}>Cliente: {confirm.name}</Text>
-            <Text>Usados: {confirm.used} / {confirm.total}</Text>
-            <Text style={{ opacity: 0.7 }}>Restantes: {Math.max(confirm.total - confirm.used, 0)}</Text>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Confirmar canje</Text>
+            <Text style={styles.modalText}>Cliente: {confirm.name}</Text>
+            <Text style={styles.modalText}>Usados: {confirm.used} / {confirm.total}</Text>
+            <Text style={styles.helper}>Restantes: {Math.max(confirm.total - confirm.used, 0)}</Text>
 
-            <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
-              <Pressable
-                onPress={onCancel}
-                style={{ flex: 1, padding: 12, backgroundColor: "#e5e7eb", borderRadius: 12, alignItems: "center" }}
-              >
-                <Text style={{ fontWeight: "700" }}>Cancelar</Text>
+            <View style={styles.modalButtons}>
+              <Pressable onPress={() => { setConfirm(null); rearmScan(200); }} style={[styles.button, styles.cancelButton]}>
+                <Text style={styles.cancelText}>Cancelar</Text>
               </Pressable>
-              <Pressable
-                onPress={onConfirm}
-                disabled={busy}
-                style={{
-                  flex: 1, padding: 12,
-                  backgroundColor: busy ? "#9ca3af" : "#2563eb",
-                  borderRadius: 12, alignItems: "center"
-                }}
-              >
-                <Text style={{ color: "#fff", fontWeight: "700" }}>{busy ? "Procesando…" : "Confirmar"}</Text>
+              <Pressable onPress={onConfirm} disabled={busy} style={[styles.button, busy ? styles.disabledButton : styles.primaryButton]}>
+                <Text style={styles.buttonText}>{busy ? 'Procesando…' : 'Confirmar'}</Text>
               </Pressable>
             </View>
           </View>
@@ -209,3 +145,26 @@ export default function StaffScanner() {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  camera: { flex: 1 },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  overlayTop: { position: 'absolute', top: 40, left: 0, right: 0, alignItems: 'center' },
+  overlayLabel: { backgroundColor: 'rgba(0,0,0,0.6)', color: tokens.colors.white, padding: 8, borderRadius: 8 },
+  modalOverlay: {
+    position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+    backgroundColor: tokens.colors.overlay, alignItems: 'center', justifyContent: 'center', padding: tokens.spacing.xl,
+  },
+  modalCard: { width: '100%', maxWidth: 380, backgroundColor: tokens.colors.white, borderRadius: tokens.radius.lg, padding: tokens.spacing.lg, gap: tokens.spacing.sm },
+  modalTitle: { fontSize: 18, fontWeight: '700' },
+  modalText: { fontWeight: '600' },
+  helper: { color: tokens.colors.mutedText },
+  modalButtons: { flexDirection: 'row', gap: tokens.spacing.sm, marginTop: tokens.spacing.sm },
+  button: { flex: 1, padding: tokens.spacing.md, borderRadius: tokens.radius.md, alignItems: 'center' },
+  primaryButton: { backgroundColor: tokens.colors.primary },
+  disabledButton: { backgroundColor: '#9ca3af' },
+  cancelButton: { backgroundColor: tokens.colors.border },
+  buttonText: { color: tokens.colors.white, fontWeight: '700' },
+  cancelText: { fontWeight: '700' },
+});
