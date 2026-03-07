@@ -13,7 +13,7 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 2. Start the app
 
    ```bash
-   npx expo start
+   npm run start:lan
    ```
 
 In the output, you'll find options to open the app in a
@@ -24,6 +24,38 @@ In the output, you'll find options to open the app in a
 - [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
 
 You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+
+## Scripts útiles para conexión desde celular (Expo Go)
+
+- `npm run start:lan`: usa la red local (misma WiFi entre laptop y celular).
+- `npm run start:tunnel`: usa túnel de Expo (útil si la red bloquea conexiones locales).
+- `npm run start:localhost`: solo para emulador/simulador en la misma máquina.
+
+## Solución rápida al error "Could not connect to development server"
+
+Si Expo Go muestra una URL como `*.exp.direct` y no conecta:
+
+1. Cierra Expo Go en el celular (forzar cierre).
+2. En la computadora, detén Metro y reinícialo limpio:
+
+   ```bash
+   npx expo start --tunnel --clear
+   ```
+
+   o con scripts:
+
+   ```bash
+   npm run start:tunnel -- --clear
+   ```
+
+3. Escanea nuevamente el QR desde Expo Go.
+4. Si sigue fallando, cambia de modo:
+   - Si estabas en `tunnel`, prueba `npm run start:lan`.
+   - Si estabas en `lan`, prueba `npm run start:tunnel`.
+5. Verifica que:
+   - celular y laptop estén en la misma WiFi (sin red de invitados),
+   - no haya VPN activa,
+   - firewall/antivirus no esté bloqueando Node/Expo.
 
 ## Get a fresh project
 
